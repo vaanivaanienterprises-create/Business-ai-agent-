@@ -1,4 +1,6 @@
-from flask import Flask, render_template_string, request, redirect, url_for
+from flask import Flask, render_template_string, request, redirect, url_for, flash, send_file
+import csv
+import io
 from flask_wtf.csrf import CSRFProtect
 from master_agent.core import get_agent_status
 from master_agent.database import connect, init_db
@@ -11,8 +13,13 @@ from flask import session
 from flask_login import LoginManager, UserMixin, login_user, logout_user, current_user
 from werkzeug.security import check_password_hash
 from master_agent.providers.ai_engine import ask_openai, ask_claude
+from master_agent.marketing.metricool import get_metricool_status
 
 from master_agent.marketing.page import marketing_bp
+from master_agent.marketing.media import media_bp
+from master_agent.marketing.handoff import handoff_bp
+from master_agent.marketing.scheduler import create_daily_queue
+from master_agent.marketing.control import get_marketing_control, set_marketing_control
 from master_agent.control import control_bp
 from master_agent.business_modules import business_bp
 
@@ -24,6 +31,7 @@ app.secret_key = SECRET_FILE.read_text().strip()
 if len(app.secret_key) < 64:
     raise RuntimeError("Invalid master secret")
 app.config.update(
+    MAX_CONTENT_LENGTH=105 * 1024 * 1024,
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=os.getenv("COOKIE_SECURE", "0") == "1"
@@ -54,6 +62,8 @@ def require_admin_login():
         return redirect(url_for("login"))
 csrf = CSRFProtect(app)
 app.register_blueprint(marketing_bp)
+app.register_blueprint(media_bp)
+app.register_blueprint(handoff_bp)
 app.register_blueprint(control_bp)
 app.register_blueprint(business_bp)
 
@@ -94,6 +104,8 @@ button{background:#1769e0;color:white;border:0;font-weight:bold}
   <div class="nav-heading">WORKSPACE</div>
   <a class="nav-link active" href="/">▦ Dashboard</a>
   <a class="nav-link" href="/marketing">✧ Marketing</a>
+  <a class="nav-link" href="/media">▧ Media Manager</a>
+  <a class="nav-link" href="/metricool-handoff">↗ Metricool Handoff</a>
 
   <div class="nav-heading">BUSINESS</div>
   <div class="nav-link disabled">♡ Home Care <small>SOON</small></div>
@@ -117,6 +129,11 @@ button{background:#1769e0;color:white;border:0;font-weight:bold}
 </form>
 </header>
 <main>
+{% with messages = get_flashed_messages(with_categories=true) %}
+{% for category, message in messages %}
+<div class="{{ 'status' if category == 'success' else 'warning' }}">{{ message }}</div>
+{% endfor %}
+{% endwith %}
 
 <div class="card">
 <h3>🏢 ApnaCare Business Overview</h3>
@@ -184,6 +201,107 @@ button{background:#1769e0;color:white;border:0;font-weight:bold}
 {% for name, info in status.providers.items() %}
 <p><b>{{ name }}</b>: {{ info.status }}</p>
 {% endfor %}
+</div>
+
+<div class="card">
+<h3>Metricool Integration Status</h3>
+<p>Configuration:
+<b>{{ metricool_status.configuration_status|title }}</b></p>
+<p>Blog ID configured:
+{{ 'Yes' if metricool_status.blog_id_configured else 'No' }}</p>
+<p>User ID configured:
+{{ 'Yes' if metricool_status.user_id_configured else 'No' }}</p>
+<p>Timezone: {{ metricool_status.timezone }}</p>
+<p>API Connection:
+<b>{{ metricool_status.api_status|replace('_', ' ')|title }}</b></p>
+<p>Publishing:
+<b>{{ 'Enabled' if metricool_status.publishing_enabled else 'Disabled' }}</b></p>
+<small>Configuration check only. Live API access has not been verified.</small>
+</div>
+
+<div class="card">
+<h3>⚙️ Marketing Automation Control</h3>
+
+<p>Mode:
+<b>{{ marketing_control.mode|title }}</b></p>
+
+<p>Automation:
+<b>{{ 'Paused' if marketing_control.paused else 'Ready' }}</b></p>
+
+<p>External Publishing:
+<b>Disabled</b></p>
+
+<div class="grid">
+<form method="POST" action="/marketing/control">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<input type="hidden" name="action" value="manual">
+<button type="submit">Manual Mode</button>
+</form>
+
+<form method="POST" action="/marketing/control">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<input type="hidden" name="action" value="automatic">
+<button type="submit">Automatic Mode</button>
+</form>
+
+<form method="POST" action="/marketing/control">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<input type="hidden" name="action" value="pause">
+<button type="submit" class="reject">Pause Automation</button>
+</form>
+
+<form method="POST" action="/marketing/control">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<input type="hidden" name="action" value="resume">
+<button type="submit">Resume Automation</button>
+</form>
+</div>
+
+<p><small>Control settings only. No automatic publishing is active.</small></p>
+</div>
+
+<div class="card">
+<h3>📊 Automatic Marketing Command Center</h3>
+<p><a href="/marketing/export.csv" style="display:inline-block;background:#1769e0;color:white;padding:10px 14px;border-radius:8px;text-decoration:none;font-weight:bold">Download Approved Posts CSV</a></p>
+<p><b>Total Queue Items:</b> {{ marketing_summary.total }}</p>
+<p><b>Planned:</b> {{ marketing_summary.planned }}</p>
+<p><b>Published:</b> {{ marketing_summary.published }}</p>
+<p><b>Failed:</b> {{ marketing_summary.failed }}</p>
+
+<form method="POST" action="/marketing/queue/today">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<button type="submit">Create Today's Marketing Queue</button>
+</form>
+
+<hr>
+<h4>Platform Connections</h4>
+{% for platform in marketing_platforms %}
+<div class="item">
+<b>{{ platform.platform }}</b>
+<p>Connection:
+<strong>{{ platform.connection_status|replace('_', ' ')|title }}</strong></p>
+<p>Account: {{ platform.account_name or 'Not configured' }}</p>
+<p><small>Last checked: {{ platform.last_checked or 'Not checked yet' }}</small></p>
+{% if platform.last_error %}
+<p class="warning">Issue: {{ platform.last_error }}</p>
+{% endif %}
+</div>
+{% else %}
+<p>No platform records yet.</p>
+{% endfor %}
+
+<hr>
+<h4>Recent Marketing Items</h4>
+{% for item in recent_marketing %}
+<div class="item">
+<b>{{ item.platform }} — {{ item.content_type }}</b>
+<p>{{ item.scheduled_at }}</p>
+<small>Status: {{ item.status }}</small>
+</div>
+{% else %}
+<p>No marketing queue items yet.</p>
+{% endfor %}
+<p><small>Queue planning only. No external posts are published by this button.</small></p>
 </div>
 
 <div class="card">
@@ -330,13 +448,108 @@ def dashboard():
             "SELECT * FROM activity_logs ORDER BY id DESC LIMIT 10"
         ).fetchall()
 
+        marketing_summary = db.execute("""
+            SELECT
+                COUNT(*) AS total,
+                COALESCE(SUM(status = 'planned'), 0) AS planned,
+                COALESCE(SUM(status = 'published'), 0) AS published,
+                COALESCE(SUM(status = 'failed'), 0) AS failed
+            FROM marketing_posts
+        """).fetchone()
+
+        marketing_platforms = db.execute("""
+            SELECT platform, account_name, connection_status,
+                   last_checked, last_error
+            FROM marketing_platforms
+            ORDER BY platform
+        """).fetchall()
+
+        recent_marketing = db.execute("""
+            SELECT platform, content_type, scheduled_at, status
+            FROM marketing_posts
+            ORDER BY scheduled_at DESC
+            LIMIT 12
+        """).fetchall()
+
     return render_template_string(
         PAGE,
         status=status,
         tasks=tasks,
         approvals=approvals,
-        logs=logs
+        logs=logs,
+        marketing_summary=marketing_summary,
+        marketing_platforms=marketing_platforms,
+        recent_marketing=recent_marketing,
+        metricool_status=get_metricool_status(),
+        marketing_control=get_marketing_control()
     )
+
+
+@app.route("/marketing/control", methods=["POST"])
+def update_marketing_control():
+    action = request.form.get("action", "").strip()
+
+    if action == "manual":
+        result = set_marketing_control(mode="manual")
+    elif action == "automatic":
+        result = set_marketing_control(mode="automatic")
+    elif action == "pause":
+        result = set_marketing_control(paused=True)
+    elif action == "resume":
+        result = set_marketing_control(paused=False)
+    else:
+        result = {"success": False, "message": "Invalid control action."}
+
+    if result.get("success"):
+        flash(result["message"], "success")
+    else:
+        flash(result.get("message", "Control update failed."), "error")
+
+    return redirect(url_for("dashboard"))
+
+
+@app.route("/marketing/export.csv", methods=["GET"])
+def export_marketing_csv():
+    output = io.StringIO(newline="")
+    writer = csv.writer(output)
+    writer.writerow(["platform", "content_type", "caption", "scheduled_at"])
+
+    with connect() as db:
+        rows = db.execute("""
+            SELECT platform, content_type, caption, scheduled_at
+            FROM marketing_posts
+            WHERE status = 'planned'
+              AND TRIM(COALESCE(caption, '')) != ''
+            ORDER BY scheduled_at ASC
+        """).fetchall()
+
+        for row in rows:
+            writer.writerow([
+                row["platform"],
+                row["content_type"],
+                row["caption"],
+                row["scheduled_at"] or ""
+            ])
+
+    data = io.BytesIO(output.getvalue().encode("utf-8-sig"))
+    return send_file(
+        data,
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name="apnacare_approved_marketing_posts.csv"
+    )
+
+
+@app.route("/marketing/queue/today", methods=["POST"])
+def generate_marketing_queue():
+    result = create_daily_queue()
+
+    flash(
+        f"Marketing Queue: {result['created']} created, "
+        f"{result['skipped']} already existed.",
+        "success"
+    )
+    return redirect(url_for("dashboard"))
 
 
 @app.route("/tasks", methods=["POST"])
@@ -353,7 +566,14 @@ def add_task():
 
 @app.route("/approval/<int:request_id>/<decision>", methods=["POST"])
 def handle_approval(request_id, decision):
-    review_approval(request_id, decision)
+    result = review_approval(request_id, decision)
+
+    if result.get("success"):
+        status = result.get("status", "reviewed")
+        flash(f"Request #{request_id} {status}.", "success")
+    else:
+        flash(result.get("message", "Approval review failed."), "error")
+
     return redirect(url_for("dashboard"))
 
 

@@ -3,6 +3,12 @@ import json
 import urllib.request
 import urllib.error
 
+from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+
+
 
 def ask_openai(prompt):
     api_key = os.getenv("OPENAI_API_KEY")

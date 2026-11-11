@@ -1,7 +1,31 @@
 .venv/
 __pycache__/
 *.pyc
-*.db
-.master_secret
-.env
 *.log
+.env
+.env.*
+.master_secret
+*.db
+*.sqlite
+*.sqlite3
+
+# Private business data
+backups/
+master_agent/static/uploads/
+
+# Local backups and old versions
+*.backup
+*.bak
+*.before_*
+*.v2backup
+*.instagram_backup
+*_backup.py
+*_before_*.py
+web.py.marketing_backup
+*.py.before_*
+*.py.v2backup
+*.py.instagram_backup
+
+# Local test files
+test_apnacare.png
+add_marketing.py

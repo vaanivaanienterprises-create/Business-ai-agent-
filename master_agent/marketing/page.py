@@ -52,21 +52,14 @@ a{color:#1769e0}
 <textarea readonly>{{ result.instagram_draft }}</textarea>
 <p><b>{{ result.status }}</b></p>
 {% if result.approval_request_id %}
-<div style="background:#e8f5e9;padding:12px;border-radius:8px">
+<div style="background:#e8f5e9;color:#173b2b;padding:12px;border-radius:8px">
 <b>✅ Draft Approval Queue में सेव हो गया!</b>
 <p>Approval Request ID: #{{ result.approval_request_id }}</p>
 <p>Status: Waiting for Admin Approval</p>
 <p>यह पोस्ट अभी प्रकाशित नहीं हुई है।</p>
 </div>
 {% endif %}
-{% if result.approval_request_id %}
-<div style="background:#e8f5e9;padding:12px;border-radius:8px">
-<b>✅ Draft Approval Queue में सेव हो गया!</b>
-<p>Approval Request ID: #{{ result.approval_request_id }}</p>
-<p>Status: Waiting for Admin Approval</p>
-<p>यह पोस्ट अभी प्रकाशित नहीं हुई है।</p>
-</div>
-{% endif %}
+
 {% endif %}
 </div>
 </body>
